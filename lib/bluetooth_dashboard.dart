@@ -12,6 +12,7 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
   List<ScanResult> devices = [];
   BluetoothDevice? connectedDevice;
   BluetoothCharacteristic? notifyCharacteristic;
+  BluetoothCharacteristic? writeCharacteristic;
 
   int stretchCount = 0;
   DateTime? lastStretch;
@@ -24,23 +25,32 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
     setState(() {});
     FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
     FlutterBluePlus.scanResults.listen((results) {
+      // Filter duplicates by device ID
+      final unique = <String, ScanResult>{};
+      for (final r in results) {
+        unique[r.device.remoteId.str] = r;
+      }
       setState(() {
-        devices = results;
+        devices = unique.values.toList();
       });
     });
   }
 
   Future<void> connectToDevice(BluetoothDevice device) async {
     try {
-      await device.connect();
+      await device.connect(autoConnect: false);
       setState(() {
         connectedDevice = device;
       });
 
       var services = await device.discoverServices();
       for (var service in services) {
+        print("Service: ${service.uuid}");
         for (var characteristic in service.characteristics) {
-          if (characteristic.properties.notify) {
+          print("  Characteristic: ${characteristic.uuid}");
+
+          if (characteristic.properties.notify ||
+              characteristic.properties.indicate) {
             await characteristic.setNotifyValue(true);
             notifyCharacteristic = characteristic;
 
@@ -48,7 +58,6 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
               final dataString = String.fromCharCodes(value);
               print("Arduino sent: $dataString");
 
-              // Assume Arduino sends "stretched" when stretch is done
               if (dataString.trim() == "stretched") {
                 setState(() {
                   stretchCount++;
@@ -56,13 +65,45 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                 });
               }
             });
-            return;
+          }
+
+          if (characteristic.properties.write ||
+              characteristic.properties.writeWithoutResponse) {
+            writeCharacteristic = characteristic;
           }
         }
       }
+
+      // Send greeting automatically after connecting
+      sendGreeting();
     } catch (e) {
       print("Bluetooth error: $e");
     }
+  }
+
+  void sendGreeting() async {
+    if (writeCharacteristic != null) {
+      try {
+        await writeCharacteristic!.write(
+          "Hi there! You are now connected to the App!".codeUnits,
+          withoutResponse: true,
+        );
+        print("Greeting sent!");
+      } catch (e) {
+        print("Error sending greeting: $e");
+      }
+    } else {
+      print("No writable characteristic found.");
+    }
+  }
+
+  void deviceDisconnect() {
+    connectedDevice?.disconnect();
+    setState(() {
+      connectedDevice = null;
+      notifyCharacteristic = null;
+      writeCharacteristic = null;
+    });
   }
 
   @override
@@ -188,6 +229,21 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                         subtitle: Text("$streak days in a row!"),
                       ),
                     ),
+                    const SizedBox(height: 10),
+                    Center(
+                      child: ElevatedButton.icon(
+                        onPressed: sendGreeting,
+                        icon: const Icon(Icons.send),
+                        label: const Text("Send Greeting"),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 24,
+                            vertical: 12,
+                          ),
+                          textStyle: const TextStyle(fontSize: 18),
+                        ),
+                      ),
+                    ),
                     const Spacer(),
                     Center(
                       child: ElevatedButton.icon(
@@ -209,13 +265,5 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                 ),
               ),
     );
-  }
-
-  void deviceDisconnect() {
-    connectedDevice?.disconnect();
-    setState(() {
-      connectedDevice = null;
-      notifyCharacteristic = null;
-    });
   }
 }
