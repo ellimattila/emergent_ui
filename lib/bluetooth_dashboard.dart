@@ -136,8 +136,6 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
 
                   setState(() {
                     exerciseStatus = "$exerciseStretchCount / $targetReps";
-                    stretchCount++;
-                    lastStretch = DateTime.now();
                   });
 
                   await playRepSound();
@@ -149,6 +147,9 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                       exerciseStarted = false;
                       exerciseStretchCount = 0;
                       exerciseStatus = "✅ Done!";
+                      stretchCount++; // Increment stretch count only after a completed session
+                      lastStretch =
+                          DateTime.now(); // Update lastStretch only after a completed session
                     });
                     logger.i("🎉 Exercise complete! Sound played.");
                   }
@@ -305,10 +306,12 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                               ),
                             ),
                             const SizedBox(height: 10),
-                            LinearProgressIndicator(
-                              value: percent,
-                              minHeight: 12,
+                            ClipRRect(
                               borderRadius: BorderRadius.circular(10),
+                              child: LinearProgressIndicator(
+                                value: percent,
+                                minHeight: 12,
+                              ),
                             ),
                             const SizedBox(height: 8),
                             Text("$stretchCount / $dailyGoal stretches"),
@@ -345,21 +348,6 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                         ),
                         title: const Text("Streak"),
                         subtitle: Text("$streak days in a row!"),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Center(
-                      child: ElevatedButton.icon(
-                        onPressed: sendGreeting,
-                        icon: const Icon(Icons.send),
-                        label: const Text("Send Greeting"),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 12,
-                          ),
-                          textStyle: const TextStyle(fontSize: 18),
-                        ),
                       ),
                     ),
                     const SizedBox(height: 10),
