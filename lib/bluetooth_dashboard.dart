@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'dart:convert';
+import 'dart:async';
+import 'package:logger/logger.dart';
+import 'package:audioplayers/audioplayers.dart';
 
 class BluetoothDashboardPage extends StatefulWidget {
   const BluetoothDashboardPage({super.key});
@@ -9,6 +13,17 @@ class BluetoothDashboardPage extends StatefulWidget {
 }
 
 class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
+  final Logger logger = Logger();
+  final AudioPlayer audioPlayer = AudioPlayer();
+
+  bool exerciseStarted = false;
+  int exerciseStretchCount = 0;
+  final double targetForce = 5.0;
+  final double minumumForce = 1.0;
+  bool repCompleted = false;
+  final int targetReps = 10;
+  String exerciseStatus = "";
+
   List<ScanResult> devices = [];
   BluetoothDevice? connectedDevice;
   BluetoothCharacteristic? notifyCharacteristic;
@@ -25,7 +40,6 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
     setState(() {});
     FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
     FlutterBluePlus.scanResults.listen((results) {
-      // Filter duplicates by device ID
       final unique = <String, ScanResult>{};
       for (final r in results) {
         unique[r.device.remoteId.str] = r;
@@ -34,6 +48,22 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
         devices = unique.values.toList();
       });
     });
+  }
+
+  Future<void> playRepSound() async {
+    try {
+      await audioPlayer.play(AssetSource('afterEachRep.mp3'));
+    } catch (e) {
+      logger.e("Error playing rep sound: $e");
+    }
+  }
+
+  Future<void> playCompletionSound() async {
+    try {
+      await audioPlayer.play(AssetSource('stretchingDone.mp3'));
+    } catch (e) {
+      logger.e("Error playing completion sound: $e");
+    }
   }
 
   Future<void> connectToDevice(BluetoothDevice device) async {
@@ -45,24 +75,89 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
 
       var services = await device.discoverServices();
       for (var service in services) {
-        print("Service: ${service.uuid}");
+        logger.i("Service: ${service.uuid}");
         for (var characteristic in service.characteristics) {
-          print("  Characteristic: ${characteristic.uuid}");
+          logger.i("  Characteristic: ${characteristic.uuid}");
 
           if (characteristic.properties.notify ||
               characteristic.properties.indicate) {
-            await characteristic.setNotifyValue(true);
-            notifyCharacteristic = characteristic;
+            logger.i(
+              "[Flutter] ▶️ About to setNotifyValue on ${characteristic.uuid}",
+            );
+            try {
+              await characteristic
+                  .setNotifyValue(true)
+                  .timeout(const Duration(seconds: 5));
+              logger.i(
+                "[Flutter] ✅ setNotifyValue succeeded on ${characteristic.uuid}",
+              );
+            } on TimeoutException {
+              logger.i("[Flutter] ⏱️ setNotifyValue timed out!");
+            } catch (e) {
+              logger.i("[Flutter] ❌ setNotifyValue threw: $e");
+            }
 
-            characteristic.lastValueStream.listen((value) {
-              final dataString = String.fromCharCodes(value);
-              print("Arduino sent: $dataString");
+            logger.i("[Flutter] isNotifying=${characteristic.isNotifying}");
 
-              if (dataString.trim() == "stretched") {
+            try {
+              final raw = await characteristic.read();
+              final manual = utf8.decode(raw);
+              logger.i(
+                "[Flutter] 📖 Manual read from ${characteristic.uuid}: $manual",
+              );
+            } catch (e) {
+              logger.i("[Flutter] ❌ Manual read failed: $e");
+            }
+
+            characteristic.lastValueStream.listen((value) async {
+              final dataString = utf8.decode(value);
+              logger.i('[ESP32 ➡️ Flutter] $dataString');
+
+              if (dataString.trim() == 'stretched') {
                 setState(() {
                   stretchCount++;
                   lastStretch = DateTime.now();
                 });
+              }
+
+              if (!exerciseStarted) return;
+
+              final match = RegExp(r'(\d+\.\d{2})').firstMatch(dataString);
+              if (match != null) {
+                final forceValue = double.tryParse(match.group(1)!);
+                if (forceValue != null &&
+                    forceValue >= targetForce &&
+                    !repCompleted) {
+                  repCompleted = true;
+                  exerciseStretchCount++;
+                  logger.i(
+                    "✅ Detected $forceValue kg stretch ($exerciseStretchCount/$targetReps)",
+                  );
+
+                  setState(() {
+                    exerciseStatus = "$exerciseStretchCount / $targetReps";
+                    stretchCount++;
+                    lastStretch = DateTime.now();
+                  });
+
+                  await playRepSound();
+
+                  if (exerciseStretchCount >= targetReps) {
+                    logger.i("🔔 Playing completion sound...");
+                    await playCompletionSound();
+                    setState(() {
+                      exerciseStarted = false;
+                      exerciseStretchCount = 0;
+                      exerciseStatus = "✅ Done!";
+                    });
+                    logger.i("🎉 Exercise complete! Sound played.");
+                  }
+                }
+                if (forceValue != null &&
+                    forceValue <= minumumForce &&
+                    repCompleted) {
+                  repCompleted = false;
+                }
               }
             });
           }
@@ -74,10 +169,9 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
         }
       }
 
-      // Send greeting automatically after connecting
       sendGreeting();
-    } catch (e) {
-      print("Bluetooth error: $e");
+    } catch (e, stack) {
+      logger.e("Bluetooth error", error: e, stackTrace: stack);
     }
   }
 
@@ -86,15 +180,26 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
       try {
         await writeCharacteristic!.write(
           "Hi there! You are now connected to the App!".codeUnits,
-          withoutResponse: true,
+          withoutResponse: false,
         );
-        print("Greeting sent!");
-      } catch (e) {
-        print("Error sending greeting: $e");
+        logger.i("Greeting sent!");
+      } catch (e, stack) {
+        logger.e("Error sending greeting", error: e, stackTrace: stack);
       }
     } else {
-      print("No writable characteristic found.");
+      logger.w("No writable characteristic found.");
     }
+  }
+
+  void resetStretchCount() {
+    setState(() {
+      stretchCount = 0;
+      lastStretch = null;
+      exerciseStarted = true;
+      exerciseStretchCount = 0;
+      exerciseStatus = "0 / $targetReps";
+    });
+    logger.i("🔁 Stretch count and exercise state reset");
   }
 
   void deviceDisconnect() {
@@ -123,7 +228,20 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                 builder:
                     (context) => AlertDialog(
                       title: const Text('Settings'),
-                      content: const Text('Settings panel coming soon...'),
+                      content: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Settings panel coming soon...'),
+                          const SizedBox(height: 12),
+                          ElevatedButton(
+                            onPressed: () {
+                              resetStretchCount();
+                              Navigator.pop(context);
+                            },
+                            child: const Text('Reset Stretch Count'),
+                          ),
+                        ],
+                      ),
                       actions: [
                         TextButton(
                           onPressed: () => Navigator.pop(context),
@@ -206,7 +324,7 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                       ),
                       child: ListTile(
                         leading: const Icon(Icons.access_time),
-                        title: const Text("Last Stretch"),
+                        title: const Text("Last Stretching Session"),
                         subtitle: Text(
                           lastStretch != null
                               ? "${lastStretch!.hour}:${lastStretch!.minute.toString().padLeft(2, '0')} today"
@@ -244,12 +362,42 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                         ),
                       ),
                     ),
-                    const Spacer(),
+                    const SizedBox(height: 10),
                     Center(
                       child: ElevatedButton.icon(
                         onPressed: () {
-                          deviceDisconnect();
+                          setState(() {
+                            exerciseStarted = true;
+                            exerciseStretchCount = 0;
+                            exerciseStatus = "0 / $targetReps";
+                          });
+                          logger.i("🏁 Exercise started");
                         },
+                        icon: const Icon(Icons.fitness_center),
+                        label: const Text("Start stretching"),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 24,
+                            vertical: 12,
+                          ),
+                          textStyle: const TextStyle(fontSize: 18),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Center(
+                      child: Text(
+                        exerciseStatus,
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const Spacer(),
+                    Center(
+                      child: ElevatedButton.icon(
+                        onPressed: deviceDisconnect,
                         icon: const Icon(Icons.link_off),
                         label: const Text("Disconnect"),
                         style: ElevatedButton.styleFrom(
