@@ -17,12 +17,13 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
   final AudioPlayer audioPlayer = AudioPlayer();
 
   bool exerciseStarted = false;
+  bool exercisePaused = false;
   int exerciseStretchCount = 0;
-  final double targetForce = 5.0;
-  final double minumumForce = 1.0;
+  double targetForce = 55.0;
+  double minumumForce = 15.0;
   bool repCompleted = false;
-  final int targetReps = 10;
-  String exerciseStatus = "";
+  int targetReps = 10;
+  String exerciseStatus = "0 / 10";
 
   List<ScanResult> devices = [];
   BluetoothDevice? connectedDevice;
@@ -66,6 +67,14 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
     }
   }
 
+  Future<void> playMinForceSound() async {
+    try {
+      await audioPlayer.play(AssetSource('minimumForceReached.mp3'));
+    } catch (e) {
+      logger.e("Error playing minimum force sound: $e");
+    }
+  }
+
   Future<void> connectToDevice(BluetoothDevice device) async {
     try {
       await device.connect(autoConnect: false);
@@ -81,32 +90,12 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
 
           if (characteristic.properties.notify ||
               characteristic.properties.indicate) {
-            logger.i(
-              "[Flutter] ▶️ About to setNotifyValue on ${characteristic.uuid}",
-            );
             try {
               await characteristic
                   .setNotifyValue(true)
                   .timeout(const Duration(seconds: 5));
-              logger.i(
-                "[Flutter] ✅ setNotifyValue succeeded on ${characteristic.uuid}",
-              );
-            } on TimeoutException {
-              logger.i("[Flutter] ⏱️ setNotifyValue timed out!");
             } catch (e) {
-              logger.i("[Flutter] ❌ setNotifyValue threw: $e");
-            }
-
-            logger.i("[Flutter] isNotifying=${characteristic.isNotifying}");
-
-            try {
-              final raw = await characteristic.read();
-              final manual = utf8.decode(raw);
-              logger.i(
-                "[Flutter] 📖 Manual read from ${characteristic.uuid}: $manual",
-              );
-            } catch (e) {
-              logger.i("[Flutter] ❌ Manual read failed: $e");
+              logger.i("[Flutter] setNotifyValue threw: $e");
             }
 
             characteristic.lastValueStream.listen((value) async {
@@ -120,7 +109,7 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                 });
               }
 
-              if (!exerciseStarted) return;
+              if (!exerciseStarted || exercisePaused) return;
 
               final match = RegExp(r'(\d+\.\d{2})').firstMatch(dataString);
               if (match != null) {
@@ -131,7 +120,7 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                   repCompleted = true;
                   exerciseStretchCount++;
                   logger.i(
-                    "✅ Detected $forceValue kg stretch ($exerciseStretchCount/$targetReps)",
+                    "Detected $forceValue kg stretch ($exerciseStretchCount/$targetReps)",
                   );
 
                   setState(() {
@@ -141,23 +130,23 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                   await playRepSound();
 
                   if (exerciseStretchCount >= targetReps) {
-                    logger.i("🔔 Playing completion sound...");
                     await playCompletionSound();
                     setState(() {
                       exerciseStarted = false;
+                      exercisePaused = false;
                       exerciseStretchCount = 0;
                       exerciseStatus = "✅ Done!";
-                      stretchCount++; // Increment stretch count only after a completed session
-                      lastStretch =
-                          DateTime.now(); // Update lastStretch only after a completed session
+                      stretchCount++;
+                      lastStretch = DateTime.now();
                     });
-                    logger.i("🎉 Exercise complete! Sound played.");
                   }
                 }
+
                 if (forceValue != null &&
                     forceValue <= minumumForce &&
                     repCompleted) {
                   repCompleted = false;
+                  await playMinForceSound();
                 }
               }
             });
@@ -169,8 +158,6 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
           }
         }
       }
-
-      sendGreeting();
     } catch (e, stack) {
       logger.e("Bluetooth error", error: e, stackTrace: stack);
     }
@@ -197,10 +184,11 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
       stretchCount = 0;
       lastStretch = null;
       exerciseStarted = true;
+      exercisePaused = false;
       exerciseStretchCount = 0;
       exerciseStatus = "0 / $targetReps";
     });
-    logger.i("🔁 Stretch count and exercise state reset");
+    logger.i("Stretch count and exercise state reset");
   }
 
   void deviceDisconnect() {
@@ -226,30 +214,89 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
             onPressed: () {
               showDialog(
                 context: context,
-                builder:
-                    (context) => AlertDialog(
-                      title: const Text('Settings'),
-                      content: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Text('Settings panel coming soon...'),
-                          const SizedBox(height: 12),
-                          ElevatedButton(
-                            onPressed: () {
-                              resetStretchCount();
-                              Navigator.pop(context);
-                            },
-                            child: const Text('Reset Stretch Count'),
+                builder: (context) {
+                  double tempMinForce = minumumForce;
+                  double tempTargetForce = targetForce;
+                  int tempTargetReps = targetReps;
+
+                  return StatefulBuilder(
+                    builder:
+                        (context, setDialogState) => AlertDialog(
+                          title: const Text('Settings'),
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text('Minimum Force Threshold'),
+                              Slider(
+                                value: tempMinForce,
+                                min: 0,
+                                max: 50,
+                                divisions: 100,
+                                label: tempMinForce.toStringAsFixed(1),
+                                onChanged: (value) {
+                                  setDialogState(() => tempMinForce = value);
+                                },
+                              ),
+                              const Text('Target Force Threshold'),
+                              Slider(
+                                value: tempTargetForce,
+                                min: 51,
+                                max: 100,
+                                divisions: 100,
+                                label: tempTargetForce.toStringAsFixed(1),
+                                onChanged: (value) {
+                                  setDialogState(() => tempTargetForce = value);
+                                },
+                              ),
+                              const Text('Target Repetitions'),
+                              Slider(
+                                value: tempTargetReps.toDouble(),
+                                min: 5,
+                                max: 30,
+                                divisions: 25,
+                                label: tempTargetReps.toString(),
+                                onChanged: (value) {
+                                  setDialogState(
+                                    () => tempTargetReps = value.round(),
+                                  );
+                                },
+                              ),
+                              const SizedBox(height: 12),
+                              ElevatedButton(
+                                onPressed: () {
+                                  setState(() {
+                                    minumumForce = tempMinForce;
+                                    targetForce = tempTargetForce;
+                                    targetReps = tempTargetReps;
+                                    exerciseStatus =
+                                        "$exerciseStretchCount / $targetReps";
+                                  });
+                                  logger.i(
+                                    "Thresholds updated: min=$minumumForce, target=$targetForce, reps=$targetReps",
+                                  );
+                                  Navigator.pop(context);
+                                },
+                                child: const Text('Save Thresholds'),
+                              ),
+                              const SizedBox(height: 12),
+                              ElevatedButton(
+                                onPressed: () {
+                                  resetStretchCount();
+                                  Navigator.pop(context);
+                                },
+                                child: const Text('Reset Stretch Count'),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('Close'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('Close'),
+                            ),
+                          ],
                         ),
-                      ],
-                    ),
+                  );
+                },
               );
             },
           ),
@@ -355,20 +402,29 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                       child: ElevatedButton.icon(
                         onPressed: () {
                           setState(() {
-                            exerciseStarted = true;
-                            exerciseStretchCount = 0;
-                            exerciseStatus = "0 / $targetReps";
+                            if (!exerciseStarted) {
+                              exerciseStarted = true;
+                              exercisePaused = false;
+                              exerciseStretchCount = 0;
+                              exerciseStatus = "0 / $targetReps";
+                            } else {
+                              exercisePaused = !exercisePaused;
+                            }
                           });
-                          logger.i("🏁 Exercise started");
                         },
-                        icon: const Icon(Icons.fitness_center),
-                        label: const Text("Start stretching"),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 12,
-                          ),
-                          textStyle: const TextStyle(fontSize: 18),
+                        icon: Icon(
+                          exerciseStarted
+                              ? (exercisePaused
+                                  ? Icons.play_arrow
+                                  : Icons.pause)
+                              : Icons.fitness_center,
+                        ),
+                        label: Text(
+                          exerciseStarted
+                              ? (exercisePaused
+                                  ? "Resume Stretching"
+                                  : "Pause Stretching")
+                              : "Start Stretching",
                         ),
                       ),
                     ),
@@ -376,9 +432,10 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                     Center(
                       child: Text(
                         exerciseStatus,
-                        style: const TextStyle(
-                          fontSize: 20,
+                        style: TextStyle(
+                          fontSize: 32,
                           fontWeight: FontWeight.bold,
+                          color: exercisePaused ? Colors.grey : Colors.black,
                         ),
                       ),
                     ),
@@ -388,13 +445,6 @@ class _BluetoothDashboardPageState extends State<BluetoothDashboardPage> {
                         onPressed: deviceDisconnect,
                         icon: const Icon(Icons.link_off),
                         label: const Text("Disconnect"),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 12,
-                          ),
-                          textStyle: const TextStyle(fontSize: 18),
-                        ),
                       ),
                     ),
                   ],

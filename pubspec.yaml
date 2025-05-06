@@ -26,3 +26,4 @@ flutter:
   assets:
     - assets/afterEachRep.mp3
     - assets/stretchingDone.mp3
+    - assets/minimumForceReached.mp3
